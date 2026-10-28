@@ -1,40 +1,70 @@
 import { useEffect, useState } from "react";
-import type { Task } from "./schemas";
+import type { Task, CreateTaskInput } from "./schemas";
+import { simulateFetchTasks } from "./mockApi";
 import TaskList from "./TaskList";
-import NewTaskInput from "./NewTaskInput";
+import NewTaskForm from "./NewTaskForm";
 import FilterBar, { type Filter } from "./FilterBar";
 
-const STORAGE_KEY = "task-board.tasks";
+type Status = "loading" | "success" | "empty" | "error";
 
-const defaultTasks: Task[] = [
-  { id: 1, title: "Read Chapter 3", done: false },
-  { id: 2, title: "Build TaskCard", done: true },
-];
-
-function loadTasks(): Task[] {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === null) return defaultTasks;
-    return JSON.parse(saved);
-  } catch {
-    return defaultTasks;
-  }
-}
+// Challenge — keep the loading message up for at least this long so a very fast
+// response doesn't make it flicker in and out.
+const MIN_LOADING_MS = 400;
 
 function TaskBoard() {
-  const [tasks, setTasks] = useState<Task[]>(loadTasks);
+  const [status, setStatus] = useState<Status>("loading");
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-    } catch {
-      // Storage can be unavailable (e.g. private mode); the board still works in memory.
-    }
-  }, [tasks]);
+  function loadTasks() {
+    const startedAt = Date.now();
 
-  function handleAddTask(title: string) {
-    setTasks([...tasks, { id: tasks.length + 1, title, done: false }]);
+    // Delay only the state transition, never the fetch itself, so the loading
+    // message stays visible for at least MIN_LOADING_MS even on a fast response.
+    function settle(apply: () => void) {
+      const remaining = MIN_LOADING_MS - (Date.now() - startedAt);
+      if (remaining > 0) {
+        setTimeout(apply, remaining);
+      } else {
+        apply();
+      }
+    }
+
+    simulateFetchTasks()
+      .then((data) => {
+        settle(() => {
+          setTasks(data);
+          setStatus(data.length === 0 ? "empty" : "success");
+        });
+      })
+      .catch(() => settle(() => setStatus("error")));
+  }
+
+  // Initial status is already "loading", so the effect only kicks off the fetch.
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
+  // Stretch — the retry handler flips back to loading (from a click, not an
+  // effect) and re-runs the fetch so a failure can recover.
+  function handleRetry() {
+    setStatus("loading");
+    loadTasks();
+  }
+
+  function handleAddTask(input: CreateTaskInput) {
+    setTasks([
+      ...tasks,
+      {
+        id: tasks.length + 1,
+        title: input.title,
+        done: input.status === "done",
+        dueDate: input.dueDate || undefined,
+        status: input.status,
+      },
+    ]);
+    // Adding the first task moves us out of the empty state.
+    setStatus("success");
   }
 
   function handleToggleTask(id: number) {
@@ -43,11 +73,37 @@ function TaskBoard() {
     );
   }
 
+  // Status messages share one aria-live region so a screen reader announces the
+  // change automatically instead of relying on the user noticing it visually.
   return (
     <div>
-      <NewTaskInput onAddTask={handleAddTask} />
-      <FilterBar filter={filter} onFilterChange={setFilter} />
-      <TaskList tasks={tasks} filter={filter} onToggleTask={handleToggleTask} />
+      <h1>Task Board</h1>
+
+      <div aria-live="polite">
+        {status === "loading" && <p>Loading tasks...</p>}
+        {status === "error" && <p>We couldn't load your tasks.</p>}
+        {status === "empty" && <p>No tasks yet. Add your first one below.</p>}
+      </div>
+
+      {status === "error" && (
+        <button onClick={handleRetry}>Try again</button>
+      )}
+
+      {(status === "success" || status === "empty") && (
+        <>
+          <NewTaskForm onAddTask={handleAddTask} />
+          {status === "success" && (
+            <>
+              <FilterBar filter={filter} onFilterChange={setFilter} />
+              <TaskList
+                tasks={tasks}
+                filter={filter}
+                onToggleTask={handleToggleTask}
+              />
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
